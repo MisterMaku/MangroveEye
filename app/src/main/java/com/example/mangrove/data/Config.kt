@@ -30,6 +30,11 @@ object Config {
     const val MODEL_INPUT = 224          // must match the AI model input
     const val MAX_IMAGE_SIDE = 4096      // bigger photos are shrunk to this before tiling (saves memory)
 
+    // Tile details (size in m² and location): the ground size of a photo is worked out from the flight height and the
+    // lens, both read from the DJI photo itself. These two values are used only when the photo does not say.
+    const val FLIGHT_HEIGHT_M = 30.0     // metres above the ground
+    const val FOCAL_35MM = 24.0          // DJI Mini 4K lens: 24 mm (35 mm equivalent)
+
     // The app follows the model: write its 3 class names in the SAME ORDER as the model's outputs
     // (the class_names list printed in your training notebook, e.g. next to the confusion matrix).
     // Use the words "Healthy", "Non-mangrove" and "Unhealthy". Non-mangrove tiles (water, mud, land) are ignored.
@@ -37,8 +42,13 @@ object Config {
     val CLASS_HEALTHY = CLASS_NAMES.indexOf("Healthy")
     val CLASS_UNHEALTHY = CLASS_NAMES.indexOf("Unhealthy")
     const val INPUT_SCALE = 1f           // 1f = raw 0-255 pixels (EfficientNet style); use 1f / 255f if your model wants 0-1
-    // A photo is Healthy when at least this % of its tiles are Healthy, otherwise Unhealthy
+    // A photo is Healthy when at least this % of its mangrove tiles are Healthy, otherwise Unhealthy
     const val HEALTHY_MIN = 60
-    // A result within this many % of HEALTHY_MIN is marked "Uncertain" (60 +/- 10 = 50-70%).
-    const val UNCERTAIN_BAND = 10
+    // A photo is Non-mangrove when this % (or more) of its pieces are water, mud or land
+    const val NON_MANGROVE_MIN = 50
+
+    const val GIS_CELL_M = 6.0      // 86.4 m² per GIS tile
+    const val GIS_REF_LAT = 7.045
+    const val GIS_MIN_COVER = 0.10
+
 }

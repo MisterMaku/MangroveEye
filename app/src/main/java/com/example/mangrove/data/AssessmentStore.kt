@@ -16,7 +16,8 @@ class AssessmentStore(ctx: Context) {
             Assessment(o.getString("id"), o.getString("name"), o.getLong("t"),
                 o.getDouble("lat"), o.getDouble("lon"),
                 healthyOf(o), unhealthyOf(o), o.optString("k", ""),
-                o.optInt("n", 0), o.optString("g", ""), o.optString("th", ""))
+                o.optInt("n", 0), o.optString("g", ""), o.optString("th", ""), o.optBoolean("o", false),
+                o.optString("tl", ""), o.optString("geo", ""))
         }
     } catch (e: Exception) { emptyList() }
 
@@ -26,7 +27,8 @@ class AssessmentStore(ctx: Context) {
             a.put(JSONObject().put("id", it.id).put("name", it.name).put("t", it.timeMillis)
                 .put("lat", it.lat).put("lon", it.lon)
                 .put("h", it.healthy).put("u", it.unhealthy).put("k", it.photoKey)
-                .put("n", it.nonMangrove).put("g", it.grid).put("th", it.thumb))
+                .put("n", it.nonMangrove).put("g", it.grid).put("th", it.thumb).put("o", it.outOfReach)
+                .put("tl", it.tiles).put("geo", it.geo))
         }
         file.writeText(a.toString())
     }

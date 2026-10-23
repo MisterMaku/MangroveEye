@@ -11,6 +11,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.example.mangrove.data.Assessment
 import com.example.mangrove.data.BaseMap
 import com.example.mangrove.data.Config
+import com.example.mangrove.data.GisCell
+import com.example.mangrove.data.GisClass
 import com.example.mangrove.data.OrthoSource
 import com.example.mangrove.data.Status
 import androidx.core.view.doOnLayout
@@ -22,6 +24,7 @@ import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Overlay
+import org.osmdroid.views.overlay.ScaleBarOverlay
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
@@ -59,7 +62,7 @@ private fun MapView.fitOrtho(o: OrthoSource) {
 /**
  * Draws one dot per assessment. Dots that would sit on top of each other are spread apart in a small
  * spiral (a thin line shows the true spot), so every dot stays visible and tappable. Zoom in and they
- * move back to their real positions. An amber ring means the result is uncertain or not reliable.
+ * move back to their real positions.
  */
 private class PinsOverlay : Overlay() {
     private class Spot(val a: Assessment, val x: Float, val y: Float, val tx: Float, val ty: Float)
@@ -102,8 +105,13 @@ private class PinsOverlay : Overlay() {
         for (s in spots.sortedBy { it.a.id == selectedId }) {          // selected dot is drawn last (on top)
             val big = s.a.id == selectedId
             val rr = if (big) r * 1.3f else r
-            fill.color = if (s.a.status == Status.HEALTHY) 0xFF4A7C59.toInt() else 0xFFB8493A.toInt()
-            ring.color = if (s.a.note != null) 0xFFF2B84B.toInt() else android.graphics.Color.WHITE
+            fill.color = when (s.a.status) {
+                Status.HEALTHY -> 0xFF4A7C59.toInt()
+                Status.UNHEALTHY -> 0xFFB8493A.toInt()
+                Status.NON_MANGROVE -> 0xFF8C9AA5.toInt()
+                Status.OUT_OF_REACH -> 0xFFC98A3C.toInt()      // not drawn: Invalid photos have no pin (kept so the colour exists)
+            }
+            ring.color = android.graphics.Color.WHITE
             c.drawCircle(s.x, s.y, rr, fill)
             c.drawCircle(s.x, s.y, rr, ring)
         }
@@ -120,7 +128,9 @@ private class PinsOverlay : Overlay() {
 
 private class MapState(var base: BaseMap? = null, var tick: Int = 0, var srcKey: String? = null) {
     val overlay = OrthoOverlay()
+    val gis = GisOverlay()
     val pins = PinsOverlay()
+    lateinit var scale: ScaleBarOverlay
     var lastSel: String? = null
 }
 
@@ -128,7 +138,9 @@ private class MapState(var base: BaseMap? = null, var tick: Int = 0, var srcKey:
 @Composable
 fun OsmMap(
     items: List<Assessment>, selectedId: String?, baseMap: BaseMap, ortho: OrthoSource?, recenterTick: Int,
-    onSelect: (String) -> Unit, modifier: Modifier
+    onSelect: (String) -> Unit, modifier: Modifier,
+    gisCells: List<GisCell> = emptyList(), gisVisible: Set<GisClass> = emptySet(),      // GIS health map layer
+    gisSelected: GisCell? = null, onGisTap: (GisCell?) -> Unit = {}                     // tap a GIS tile to see its details
 ) {
     AndroidView(
         modifier = modifier,
@@ -144,6 +156,15 @@ fun OsmMap(
                 overlayManager.tilesOverlay.loadingLineColor = BG
                 // QGIS orthomosaic (built-in or the user's own), drawn under the pins - works offline
                 overlays.add(st.overlay)
+                overlays.add(st.gis)
+                st.scale = ScaleBarOverlay(this).apply {
+                    setAlignBottom(true)
+                    setUnitsOfMeasure(ScaleBarOverlay.UnitsOfMeasure.metric)
+                    setLineWidth(2f)
+                    setTextSize(11f * c.resources.displayMetrics.density)
+                    isEnabled = false
+                }
+                overlays.add(st.scale)
                 overlays.add(st.pins)
                 if (ortho != null) {
                     st.overlay.setSource(ortho)
@@ -162,9 +183,14 @@ fun OsmMap(
                     BaseMap.MAPTILER -> map.setTileSource(MapTilerSat)
                     BaseMap.NONE -> {}
                 }
-                map.overlayManager.tilesOverlay.isEnabled = baseMap != BaseMap.NONE
             }
+            map.overlayManager.tilesOverlay.isEnabled = baseMap != BaseMap.NONE
             st.overlay.setSource(ortho)
+            st.gis.cells = gisCells
+            st.gis.visible = gisVisible
+            st.gis.selected = gisSelected
+            st.gis.onTap = onGisTap
+            st.scale.isEnabled = gisCells.isNotEmpty()      // scale bar only while the GIS tiles are shown
             if (ortho != null && st.srcKey != ortho.key) {          // the user switched QGIS map
                 st.srcKey = ortho.key
                 map.maxZoomLevel = (ortho.maxZoom + Config.EXTRA_ZOOM).toDouble()

@@ -4,6 +4,9 @@ import android.content.Context
 import android.net.Uri
 import java.io.File
 import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
 enum class BaseMap(val label: String, val credit: String) {
     SATELLITE("Satellite", "Imagery © Esri, Maxar, Earthstar Geographics"),
@@ -11,7 +14,10 @@ enum class BaseMap(val label: String, val credit: String) {
     NONE("QGIS only", "Map: your QGIS orthomosaic (works fully offline)")
 }
 
-enum class Status(val label: String) { HEALTHY("Healthy"), UNHEALTHY("Unhealthy") }
+enum class Status(val label: String) {
+    HEALTHY("Healthy"), UNHEALTHY("Unhealthy"), NON_MANGROVE("Non-mangrove"),
+    OUT_OF_REACH("Invalid")      // photo GPS is outside the QGIS map: invalid, no AI prediction, no pin
+}
 
 data class Assessment(
     val id: String,
@@ -24,29 +30,54 @@ data class Assessment(
     val photoKey: String = "",     // name|size of the photo, used to skip duplicates
     val nonMangrove: Int = 0,      // % of ALL pieces that were water, mud or land
     val grid: String = "",         // tile map, one letter per tile: H healthy, U unhealthy, N non-mangrove; rows split by "/"
-    val thumb: String = ""         // file name of the small preview photo (see Thumbs)
+    val thumb: String = "",        // file name of the small preview photo (see Thumbs)
+    val outOfReach: Boolean = false, // GPS is outside the QGIS map: the AI was NOT run for this photo
+    val tiles: String = "",        // per tile "healthy pieces:unhealthy pieces", tiles split by ",", rows by "/"
+    val geo: String = ""           // see PhotoGeo: tile size in metres, photo centre, heading, pieces per tile
 ) {
     val status: Status
-        get() = if (healthy >= Config.HEALTHY_MIN) Status.HEALTHY else Status.UNHEALTHY
-    val uncertain: Boolean
-        get() = Math.abs(healthy - Config.HEALTHY_MIN) <= Config.UNCERTAIN_BAND
-    val mostlyNonMangrove: Boolean
-        get() = nonMangrove >= 50
-    /** A warning shown next to the result when it should not be trusted as a confident Healthy / Unhealthy. */
-    val note: String?
         get() = when {
-            mostlyNonMangrove -> "Mostly water, mud or land ($nonMangrove%): result is not reliable"
-            uncertain -> "Uncertain: close to the ${Config.HEALTHY_MIN}% limit"
-            else -> null
+            outOfReach -> Status.OUT_OF_REACH
+            nonMangrove >= Config.NON_MANGROVE_MIN -> Status.NON_MANGROVE
+            healthy >= Config.HEALTHY_MIN -> Status.HEALTHY
+            else -> Status.UNHEALTHY
         }
+    val showsPercent: Boolean get() = status == Status.HEALTHY || status == Status.UNHEALTHY
     val tilesText: String
-        get() = "Healthy $healthy% · Unhealthy $unhealthy%" + (if (nonMangrove > 0) " · Non-mangrove $nonMangrove%" else "")
+        get() = if (outOfReach) "Invalid: outside the QGIS map · no AI prediction"
+        else "Healthy $healthy% · Unhealthy $unhealthy%" + (if (nonMangrove > 0) " · Non-mangrove $nonMangrove%" else "")
     val gpsText: String
         get() = String.format(Locale.US, "%.5f, %.5f", lat, lon)
+    /** Ground area covered by all the tiles of this photo in m² (0 if unknown). */
+    val coveredM2: Double
+        get() {
+            val g = PhotoGeo.parse(geo) ?: return 0.0
+            return grid.split("/").sumOf { it.length } * g.tileM * g.tileM
+        }
+
+    /** Details of one tile: its size, its place on the ground (GPS) and its Healthy / Unhealthy share. */
+    fun tileInfo(row: Int, col: Int): TileInfo? {
+        val g = PhotoGeo.parse(geo) ?: return null
+        val cell = tiles.split("/").getOrNull(row)?.split(",")?.getOrNull(col)?.split(":") ?: return null
+        val nH = cell.getOrNull(0)?.toIntOrNull() ?: return null
+        val nU = cell.getOrNull(1)?.toIntOrNull() ?: return null
+        val np = g.pieces.coerceAtLeast(1)
+        val hp = (nH * 100.0 / np).roundToInt()                    // % of THIS tile that is Healthy
+        val up = (nU * 100.0 / np).roundToInt()                    // % of THIS tile that is Unhealthy
+        val right = (col + 0.5 - g.cx) * g.tileM                    // metres to the right of the photo centre
+        val fwd = (g.cy - (row + 0.5)) * g.tileM                    // metres towards the top of the photo
+        val h = Math.toRadians(g.heading)                           // the way the top of the photo points (0 = north)
+        val east = right * cos(h) + fwd * sin(h)
+        val north = fwd * cos(h) - right * sin(h)
+        return TileInfo(row, col, hp, up, (100 - hp - up).coerceAtLeast(0), g.tileM, g.tileM * g.tileM,
+            lat + north / 111_320.0, lon + east / (111_320.0 * cos(Math.toRadians(lat))))
+    }
     val action: String
         get() = when (status) {
             Status.HEALTHY -> "No intervention needed. Keep the current monitoring interval."
             Status.UNHEALTHY -> "Canopy damage detected. Plan a ground survey within 2 weeks."
+            Status.NON_MANGROVE -> "No mangrove here (water, mud or land). No assessment needed."
+            Status.OUT_OF_REACH -> "Invalid: the photo is outside the QGIS map, so it is not on the map and no AI prediction was made."
         }
 }
 
@@ -68,9 +99,43 @@ data class PickedPhoto(
 
 /**
  * Result for one photo. healthy + unhealthy = 100 (of mangrove tiles only); nonMangrove is % of all tiles;
- * grid is the tile map (H / U / N per tile, rows split by "/").
+ * grid is the tile map (H / U / N per tile, rows split by "/"); tiles and geo hold the per-tile details.
  */
-data class TileResult(val healthy: Int, val unhealthy: Int, val nonMangrove: Int = 0, val grid: String = "")
+data class TileResult(
+    val healthy: Int, val unhealthy: Int, val nonMangrove: Int = 0, val grid: String = "",
+    val tiles: String = "", val geo: String = ""
+)
+
+/**
+ * How one photo sits on the ground. tileM = side of one 512 px tile in metres; cx / cy = the photo centre measured in
+ * tiles from the top-left corner; heading = direction the top of the photo points to (degrees from north);
+ * pieces = AI pieces per tile (2 x 2 = 4).
+ */
+data class PhotoGeo(val tileM: Double, val cx: Double, val cy: Double, val heading: Double, val pieces: Int) {
+    fun encode(): String = String.format(Locale.US, "%.4f,%.4f,%.4f,%.1f,%d", tileM, cx, cy, heading, pieces)
+    companion object {
+        fun parse(s: String): PhotoGeo? = try {
+            val p = s.split(",")
+            PhotoGeo(p[0].toDouble(), p[1].toDouble(), p[2].toDouble(), p[3].toDouble(), p[4].toInt())
+        } catch (e: Exception) { null }
+    }
+}
+
+/** Everything the tile view shows for one tile. */
+data class TileInfo(
+    val row: Int, val col: Int,
+    val healthyPct: Int, val unhealthyPct: Int, val nonMangrovePct: Int,   // share of the tile area
+    val sideM: Double, val areaM2: Double,                                  // size of the tile on the ground
+    val lat: Double, val lon: Double                                        // tile centre
+) {
+    val status: Status
+        get() = when {
+            healthyPct == 0 && unhealthyPct == 0 -> Status.NON_MANGROVE
+            healthyPct >= unhealthyPct -> Status.HEALTHY
+            else -> Status.UNHEALTHY
+        }
+    fun areaOf(pct: Int): Double = areaM2 * pct / 100.0
+}
 
 /** Small preview photos saved on the phone (one per assessment), used in the log, tile view and PDF. */
 object Thumbs {

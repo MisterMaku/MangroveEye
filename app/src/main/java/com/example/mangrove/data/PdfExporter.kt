@@ -45,6 +45,8 @@ object PdfExporter {
             p.color = when (a.status) {
                 Status.HEALTHY -> Color.rgb(74, 124, 89)
                 Status.UNHEALTHY -> Color.rgb(184, 73, 58)
+                Status.NON_MANGROVE -> Color.rgb(140, 154, 165)
+                Status.OUT_OF_REACH -> Color.rgb(201, 138, 60)
             }
             c.drawCircle(tx - 8f, y - 4f, 4f, p)
             p.color = Color.rgb(28, 43, 36); p.textSize = 12f; p.isFakeBoldText = true
@@ -56,14 +58,13 @@ object PdfExporter {
             c.drawText("STATUS", tx, y, p); c.drawText("SUGGESTED ACTION", tx + 84f, y, p)
             y += 13f
             p.textSize = 10f; p.isFakeBoldText = false; p.color = Color.rgb(28, 43, 36)
-            c.drawText("${a.status.label} (${a.healthy}% healthy)", tx, y, p)
+            c.drawText(if (a.showsPercent) "${a.status.label} (${a.healthy}% healthy)" else a.status.label, tx, y, p)
             c.drawText(a.action, tx + 84f, y, p)
             y += 13f
             p.color = Color.GRAY; p.textSize = 9f
             c.drawText("GPS: %.6f, %.6f".format(Locale.US, a.lat, a.lon), tx, y, p)
             y += 13f
             c.drawText("Tiles: ${a.tilesText}", tx, y, p)
-            a.note?.let { y += 13f; p.color = Color.rgb(138, 90, 30); c.drawText(it, tx, y, p) }
             y += 24f
         }
         doc.finishPage(page)

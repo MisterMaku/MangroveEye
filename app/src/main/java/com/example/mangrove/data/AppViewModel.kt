@@ -2,6 +2,7 @@ package com.example.mangrove
 
 import android.app.Application
 import android.net.Uri
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +32,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var baseMap by mutableStateOf(Config.DEFAULT_BASE)
     var ortho by mutableStateOf(OrthoTiles.load(app)); private set
     var hasCustomMap by mutableStateOf(OrthoTiles.hasCustom(app)); private set     // user added a QGIS map
+
+    // ---------- GIS health map (built from the photos you uploaded) ----------
+    // Rebuilt by itself whenever the assessment log changes. No extra AI run is needed:
+    // the tiles of every analyzed photo are placed on the map at their GPS.
+    val gis: GisResult? by derivedStateOf { GisBuilder.build(assessments) }
+    var showGis by mutableStateOf(false)                                  // GIS tiles shown on the Map screen
+    var showPins by mutableStateOf(true)                                  // pins shown on the Map screen (Pins chip)
+    var gisVisible by mutableStateOf(GisClass.values().toSet())          // layers ticked in the legend
+
+    fun toggleGisClass(c: GisClass) { gisVisible = if (c in gisVisible) gisVisible - c else gisVisible + c }
 
     // ---------- upload: single or batch ----------
     /** One box for everything: pick one photo or many at once. Picking again adds more. */
@@ -75,13 +86,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun fmt(v: Double) = String.format(Locale.US, "%.6f", v)
 
+    /** True if the photo's GPS has no drone imagery in the QGIS map (outside it, or on its empty / transparent part). */
+    fun isOutside(p: PickedPhoto): Boolean =
+        p.latLon()?.let { (la, lo) -> ortho?.hasImagery(la, lo) == false } == true
+
     private fun summary(): String {
         val missing = photos.count { !it.fromExif }
-        val outside = photos.count { p -> p.latLon()?.let { (la, lo) -> ortho?.contains(la, lo) == false } == true }
+        val outside = photos.count { isOutside(it) }
         return buildString {
             append("${photos.size} photo(s). GPS read from ${photos.size - missing}.")
             if (missing > 0) append(" $missing without GPS (they will be skipped).")
-            if (outside > 0) append(" $outside outside your mapped area.")
+            if (outside > 0) append(" $outside outside your QGIS map: marked Invalid (no AI, no pin).")
         }
     }
 
@@ -139,7 +154,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * For each photo: tile (512 px) -> AI Healthy/Unhealthy -> save the result together with the
+     * For each photo: if its GPS is inside the QGIS map, tile (512 px) -> AI Healthy/Unhealthy; if it is outside,
+     * the AI is skipped and the photo is saved as "Invalid". The result is saved together with the
      * GPS that was read from that photo at the start. Returns false if it could not start.
      */
     fun analyze(onDone: () -> Unit, onFail: () -> Unit): Boolean {
@@ -160,7 +176,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         progress = 0f
         viewModelScope.launch {
             var failed = 0
-            var noMangrove = 0
+            var outCount = 0
             var modelError: String? = null
             var lastId: String? = null
             list.forEachIndexed { i, p ->
@@ -168,12 +184,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val (la, lo) = p.latLon()!!
                 val id = UUID.randomUUID().toString()
                 val thumbFile = Thumbs.file(getApplication(), "$id.jpg")
-                val r = try {
+                val outside = isOutside(p)
+                val r: TileResult? = if (outside) {
+                    // GPS is outside the orthomosaic: NO AI prediction, only a preview photo.
+                    classifier.makeThumb(p.uri, thumbFile)
+                    progress = (i + 1f) / list.size
+                    TileResult(0, 0, 0, "")
+                } else try {
                     classifier.classify(p.uri, thumbFile) { progress = (i + it) / list.size }
                 } catch (e: ModelLoadException) { modelError = e.message; null
-                } catch (e: NoMangroveException) { noMangrove++; null
                 } catch (e: Exception) { null }
                 if (r == null) { failed++; return@forEachIndexed }
+                if (outside) outCount++
                 val base = siteName.trim()
                 val name = when {
                     base.isEmpty() -> "Site ${nextSiteNumber()}"
@@ -181,7 +203,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     else -> "$base ${i + 1}"
                 }
                 val a = Assessment(id, name, System.currentTimeMillis(), la, lo, r.healthy, r.unhealthy, p.key,
-                    r.nonMangrove, r.grid, if (thumbFile.exists()) thumbFile.name else "")
+                    r.nonMangrove, r.grid, if (thumbFile.exists()) thumbFile.name else "", outside, r.tiles, r.geo)
                 assessments = listOf(a) + assessments
                 lastId = a.id
             }
@@ -189,7 +211,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (lastId == null) {
                 message = when {
                     modelError != null -> "The AI model could not load ($modelError). Check Step 2b and Step 4."
-                    noMangrove == failed -> "No mangrove found in the photo(s)."
                     else -> "Could not read the photo(s). Try choosing them again."
                 }
                 onFail()
@@ -197,8 +218,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 selectedId = lastId
                 clearForm()
                 val notes = listOfNotNull(
-                    if (failed > 0) "$failed photo(s) skipped (unreadable or no mangrove found)." else null,
-                    if (noGps > 0) "$noGps photo(s) skipped: no GPS in the photo." else null
+                    if (failed > 0) "$failed photo(s) skipped (could not be read)." else null,
+                    if (noGps > 0) "$noGps photo(s) skipped: no GPS in the photo." else null,
+                    if (outCount > 0) "$outCount photo(s) outside the QGIS map: marked Invalid (no AI prediction, not shown on the map)." else null
                 )
                 if (notes.isNotEmpty()) message = notes.joinToString(" ")
                 onDone()

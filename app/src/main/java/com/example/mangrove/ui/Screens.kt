@@ -9,6 +9,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -27,9 +29,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -62,8 +66,9 @@ fun SplashScreen(onDone: () -> Unit) {
         DottedIcon(Icons.Outlined.Eco, 88.dp, tint = Mg.Cream)
         Spacer(Modifier.height(18.dp))
         Text("MangroveEye", color = Mg.Cream, fontSize = 28.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-        Spacer(Modifier.height(6.dp))
-        Text("AERIAL CANOPY INTELLIGENCE", color = Color(0xFFB7CDBF), fontSize = 12.sp, letterSpacing = 1.4.sp)
+        Spacer(Modifier.height(8.dp))
+        Text("Drone Based Assessment of\nMangrove Forest Health in Davao City",
+            color = Color(0xFFB7CDBF), fontSize = 14.sp, textAlign = TextAlign.Center)
     }
 }
 
@@ -72,14 +77,13 @@ fun SplashScreen(onDone: () -> Unit) {
 fun HomeScreen(vm: AppViewModel, nav: NavController) {
     val last = vm.assessments.firstOrNull()
     Column(Modifier.fillMaxSize().background(Mg.Cream).padding(18.dp)) {
-        Text("AERIAL CANOPY INTELLIGENCE", fontSize = 11.sp, letterSpacing = 1.4.sp, color = Mg.Muted)
         Text("MangroveEye", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
         Text("Mangrove Health Assessment", fontSize = 15.sp, color = Mg.Muted)
         LocationLine(Mg.Green, Modifier.padding(vertical = 12.dp))
 
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Mg.Forest).padding(16.dp)) {
             Text("LAST ASSESSMENT", fontSize = 12.sp, letterSpacing = 0.8.sp, color = Color(0xFFB7CDBF))
-            Text(last?.let { "${it.status.label} · ${it.healthy}% healthy" } ?: "No assessments yet",
+            Text(last?.let { if (it.showsPercent) "${it.status.label} · ${it.healthy}% healthy" else it.status.label } ?: "No assessments yet",
                 fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Mg.Cream)
         }
         Spacer(Modifier.height(16.dp))
@@ -149,8 +153,12 @@ fun UploadScreen(vm: AppViewModel, nav: NavController) {
                     }
                     if (p.fromExif) {
                         Text("GPS ${p.lat}, ${p.lon} (read from the photo)", fontSize = 12.5.sp, color = Mg.Green)
+                        if (vm.isOutside(p)) {
+                            Text("Outside your QGIS map. It will be marked Invalid (no AI prediction) and not shown on the map.",
+                                fontSize = 12.5.sp, color = Mg.AmberText, modifier = Modifier.padding(top = 4.dp))
+                        }
                     } else {
-                        Text("No GPS in this photo. It can't be placed on the map.",
+                        Text("No GPS in this photo. It can't be placed on the map, so it will be skipped.",
                             fontSize = 12.5.sp, color = Mg.AmberText, modifier = Modifier.padding(top = 4.dp))
                     }
                 }
@@ -227,7 +235,12 @@ fun MapScreen(vm: AppViewModel) {
     var viewing by remember { mutableStateOf<Assessment?>(null) }       // tile view dialog
     var clearing by remember { mutableStateOf(false) }
     var removingMap by remember { mutableStateOf(false) }               // confirm: remove my QGIS map
+    val gisRes = vm.gis                                                   // built from the uploaded photos
+    val showZones = vm.showGis && gisRes != null
+    var gisPick by remember { mutableStateOf<GisCell?>(null) }          // the GIS tile you tapped
+    LaunchedEffect(vm.assessments.size) { gisPick = null }              // a photo was added or deleted: clear the pick
     val shown = vm.assessments.filter { vm.filter == null || it.status == vm.filter }   // All / Healthy / Unhealthy
+    val onMap = if (vm.showPins) shown.filter { !it.outOfReach } else emptyList()        // Invalid photos get no pin; the Pins chip hides all pins
 
     Column(Modifier.fillMaxSize().background(Mg.Cream).padding(horizontal = 16.dp, vertical = 12.dp)) {
         Text("Map", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
@@ -238,8 +251,10 @@ fun MapScreen(vm: AppViewModel) {
                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(8.dp))
                     .background(Mg.AmberSoft).padding(8.dp))
         }
-        Box(Modifier.fillMaxWidth().height(screenH * 0.31f).clip(RoundedCornerShape(12.dp))) {
-            OsmMap(shown, vm.selectedId, vm.baseMap, vm.ortho, recenter, { vm.selectedId = it }, Modifier.fillMaxSize())
+        Box(Modifier.fillMaxWidth().height(screenH * 0.35f).clip(RoundedCornerShape(12.dp))) {
+            OsmMap(onMap, vm.selectedId, vm.baseMap, vm.ortho, recenter, { vm.selectedId = it }, Modifier.fillMaxSize(),
+                gisCells = if (showZones) gisRes!!.cells else emptyList(), gisVisible = vm.gisVisible,
+                gisSelected = if (showZones) gisPick else null, onGisTap = { gisPick = it })
             Column(Modifier.align(Alignment.TopEnd).padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Surface(
                     onClick = { vm.selectedId = null; recenter++ },
@@ -251,21 +266,39 @@ fun MapScreen(vm: AppViewModel) {
                     }
                 }
             }
+            if (showZones) {
+                NorthArrow(Modifier.align(Alignment.TopStart).padding(8.dp))
+                GisLegend(vm.gisVisible, Modifier.align(Alignment.BottomEnd).padding(8.dp))
+            }
         }
         Text(vm.baseMap.credit, fontSize = 10.sp, color = Mg.Muted, modifier = Modifier.padding(top = 4.dp))
         Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             BaseMap.values().filter { it != BaseMap.MAPTILER || Config.MAPTILER_KEY.isNotBlank() }.forEach { b ->
                 FilterChip(selected = vm.baseMap == b, onClick = { vm.baseMap = b }, label = { Text(b.label, fontSize = 13.sp) })
             }
+            // GIS chip, right next to "QGIS only": the tiles of the photos you uploaded, as coloured squares.
+            FilterChip(
+                selected = vm.showGis,
+                onClick = { vm.showGis = !vm.showGis; gisPick = null },
+                label = { Text("GIS", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Outlined.Layers, null, Modifier.size(16.dp)) }
+            )
+            // Pins chip, right next to "GIS": hides / shows the coloured pins so the GIS tiles are easy to see.
+            FilterChip(
+                selected = vm.showPins,
+                onClick = { vm.showPins = !vm.showPins; vm.selectedId = null },
+                label = { Text("Pins", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Outlined.LocationOn, null, Modifier.size(16.dp)) }
+            )
         }
 
         LazyColumn(Modifier.weight(1f).padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             item {
                 // Filter and legend in one row: the colored dot is the legend for the map dots.
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(selected = vm.filter == null, onClick = { vm.filter = null },
-                        label = { Text("All ${vm.assessments.size}", fontSize = 13.sp) })
-                    Status.values().forEach { st ->
+                        label = { Text("All ${vm.assessments.count { !it.outOfReach }}", fontSize = 13.sp) })
+                    listOf(Status.HEALTHY, Status.UNHEALTHY).forEach { st ->     // All / Healthy / Unhealthy
                         FilterChip(
                             selected = vm.filter == st,
                             onClick = { vm.filter = if (vm.filter == st) null else st },
@@ -275,6 +308,11 @@ fun MapScreen(vm: AppViewModel) {
                     }
                 }
             }
+            if (vm.showGis && gisRes == null) item {
+                Text("GIS shows the tiles of the photos you upload. Upload a photo that is inside the QGIS map first.",
+                    fontSize = 13.sp, color = Mg.Muted)
+            }
+            if (showZones) item { GisTileCard(gisPick) }
             shown.firstOrNull { it.id == vm.selectedId }?.let { a -> item { SelectedCard(a) { viewing = a } } }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -319,7 +357,7 @@ fun MapScreen(vm: AppViewModel) {
                         .clickable { vm.selectedId = a.id }.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Thumb(a, 52.dp, Modifier.clickable { viewing = a })     // tap the photo to see the tiles
+                    Thumb(a, 52.dp, Modifier.clickable { if (!a.outOfReach) viewing = a })     // tap the photo to see the tiles (not for Invalid photos)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f)) {
                         Text(a.name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
@@ -327,7 +365,6 @@ fun MapScreen(vm: AppViewModel) {
                         Text(a.timeMillis.fmt(), fontSize = 12.sp, color = Mg.Muted)
                         Text("GPS ${a.gpsText}", fontSize = 11.5.sp, color = Mg.Muted)
                         Text(a.tilesText, fontSize = 11.5.sp, color = Mg.Muted)
-                        a.note?.let { Text(it, fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold, color = Mg.AmberText) }
                     }
                     IconButton({ editing = a }, Modifier.size(38.dp)) {
                         Icon(Icons.Outlined.Edit, "Rename", tint = Mg.Muted, modifier = Modifier.size(20.dp))
@@ -401,8 +438,7 @@ private fun SelectedCard(a: Assessment, onTiles: () -> Unit) {
         Text(a.action, fontSize = 12.5.sp, color = Mg.Ink, modifier = Modifier.padding(top = 4.dp))
         Text("GPS ${a.gpsText}", fontSize = 11.5.sp, color = Mg.Muted)
         Text(a.tilesText, fontSize = 11.5.sp, color = Mg.Muted)
-        a.note?.let { Text(it, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = Mg.AmberText, modifier = Modifier.padding(top = 2.dp)) }
-        Box(Modifier.padding(top = 8.dp)) { SmallButton(Icons.Outlined.GridView, "View tiles", onTiles) }
+        if (!a.outOfReach) Box(Modifier.padding(top = 8.dp)) { SmallButton(Icons.Outlined.GridView, "View tiles", onTiles) }
     }
 }
 
@@ -415,7 +451,10 @@ private fun LegendDot(color: Color, label: String) {
     }
 }
 
-/** The photo with its 512 px tiles drawn on top: green = Healthy, red = Unhealthy, clear = Non-mangrove. */
+/**
+ * The photo with its 512 px tiles drawn on top: green = Healthy, red = Unhealthy, clear = Non-mangrove.
+ * Tap a tile to see its details: size (m²), location (GPS) and how much of the tile is Healthy / Unhealthy.
+ */
 @Composable
 private fun TileViewDialog(a: Assessment, onDismiss: () -> Unit) {
     val ctx = LocalContext.current
@@ -423,16 +462,28 @@ private fun TileViewDialog(a: Assessment, onDismiss: () -> Unit) {
         if (a.thumb.isEmpty()) null else BitmapFactory.decodeFile(Thumbs.file(ctx, a.thumb).path)?.asImageBitmap()
     }
     val rows = remember(a.grid) { a.grid.split("/").filter { it.isNotEmpty() } }
+    var picked by remember { mutableStateOf<Pair<Int, Int>?>(null) }          // (row, column) of the tapped tile
+    val info = picked?.let { a.tileInfo(it.first, it.second) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(a.name) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (photo != null && rows.isNotEmpty()) {
-                    Box(Modifier.fillMaxWidth().aspectRatio(photo.width / photo.height.toFloat())) {
+                    val nCols = rows.maxOf { it.length }
+                    Box(
+                        Modifier.fillMaxWidth().aspectRatio(photo.width / photo.height.toFloat())
+                            .pointerInput(rows) {
+                                detectTapGestures { p ->
+                                    val c = (p.x / (size.width / nCols)).toInt().coerceIn(0, nCols - 1)
+                                    val r = (p.y / (size.height / rows.size)).toInt().coerceIn(0, rows.size - 1)
+                                    picked = r to c
+                                }
+                            }
+                    ) {
                         Image(photo, "Photo with tiles", Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                         Canvas(Modifier.fillMaxSize()) {
-                            val cw = size.width / rows.maxOf { it.length }
+                            val cw = size.width / nCols
                             val ch = size.height / rows.size
                             rows.forEachIndexed { r, line ->
                                 line.forEachIndexed { c, t ->
@@ -440,6 +491,9 @@ private fun TileViewDialog(a: Assessment, onDismiss: () -> Unit) {
                                     if (col != null) drawRect(col.copy(alpha = 0.5f), Offset(c * cw, r * ch), Size(cw, ch))
                                     drawRect(Color.White.copy(alpha = 0.7f), Offset(c * cw, r * ch), Size(cw, ch), style = Stroke(1.5f))
                                 }
+                            }
+                            picked?.let { (r, c) ->                                  // thick outline on the tapped tile
+                                drawRect(Color.White, Offset(c * cw, r * ch), Size(cw, ch), style = Stroke(6f))
                             }
                         }
                     }
@@ -451,11 +505,52 @@ private fun TileViewDialog(a: Assessment, onDismiss: () -> Unit) {
                     LegendDot(Mg.Green, "Healthy"); LegendDot(Mg.Red, "Unhealthy"); LegendDot(Color.White, "Non-mangrove")
                 }
                 Text(a.tilesText, fontSize = 13.sp, color = Mg.Ink)
-                a.note?.let { Text(it, fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = Mg.AmberText) }
+                Text("Photo GPS ${a.gpsText}", fontSize = 12.sp, color = Mg.Muted)
+                if (a.coveredM2 > 0) {
+                    Text(String.format(Locale.US, "Area covered by the tiles: %,.0f m² (%d tiles)", a.coveredM2, rows.sumOf { it.length }),
+                        fontSize = 12.sp, color = Mg.Muted)
+                }
+                TileDetails(a, picked, info)
             }
         },
         confirmButton = { TextButton(onDismiss) { Text("Close") } }
     )
+}
+
+/** Details of the tapped tile: size, Healthy / Unhealthy share of its area, and its geographic location. */
+@Composable
+private fun TileDetails(a: Assessment, picked: Pair<Int, Int>?, info: TileInfo?) {
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Mg.GreenSoft).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        when {
+            a.geo.isEmpty() -> Text(
+                "No tile details saved for this entry (it was analyzed before this feature). Delete it and analyze the photo again.",
+                fontSize = 12.5.sp, color = Mg.Muted)
+            picked == null || info == null -> Text("Tap a tile on the photo to see its details.", fontSize = 12.5.sp, color = Mg.Muted)
+            else -> {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tile ${picked.first + 1} · ${picked.second + 1}", Modifier.weight(1f),
+                        fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
+                    StatusPill(info.status)
+                }
+                Text("Row ${picked.first + 1}, column ${picked.second + 1}", fontSize = 11.5.sp, color = Mg.Muted)
+                Text(String.format(Locale.US, "Size: %.1f m × %.1f m = %.1f m²", info.sideM, info.sideM, info.areaM2),
+                    fontSize = 13.sp, color = Mg.Ink)
+                Text(String.format(Locale.US, "Healthy: %d%% of the tile (%.1f m²)", info.healthyPct, info.areaOf(info.healthyPct)),
+                    fontSize = 13.sp, color = Mg.GreenText)
+                Text(String.format(Locale.US, "Unhealthy: %d%% of the tile (%.1f m²)", info.unhealthyPct, info.areaOf(info.unhealthyPct)),
+                    fontSize = 13.sp, color = Mg.RedText)
+                if (info.nonMangrovePct > 0) {
+                    Text(String.format(Locale.US, "Non-mangrove: %d%% of the tile (%.1f m²)", info.nonMangrovePct, info.areaOf(info.nonMangrovePct)),
+                        fontSize = 13.sp, color = Mg.GreyText)
+                }
+                Text(String.format(Locale.US, "Location (tile centre): %.6f, %.6f", info.lat, info.lon),
+                    fontSize = 12.5.sp, color = Mg.Ink, modifier = Modifier.padding(top = 2.dp))
+            }
+        }
+    }
 }
 
 @Composable
@@ -468,4 +563,80 @@ private fun RenameDialog(current: String, onDismiss: () -> Unit, onSave: (String
         confirmButton = { TextButton({ if (text.isNotBlank()) onSave(text.trim()) }) { Text("Save") } },
         dismissButton = { TextButton(onDismiss) { Text("Cancel") } }
     )
+}
+
+// ---------------- 6. GIS HEALTH MAP ----------------
+// Drawn on the Map screen by the GIS chip. It uses the tiles of the photos in the assessment log (see Gis.kt).
+
+/** Details of the GIS tile you tapped: location, area, and its Healthy / Unhealthy share. */
+@Composable
+private fun GisTileCard(c: GisCell?) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(12.dp)) {
+        if (c == null) {
+            Text("GIS tiles: tap a tile on the map to see its location, area and Healthy / Unhealthy share.", fontSize = 13.sp, color = Mg.Muted)
+            return@Column
+        }
+        fun area(m2: Double) = String.format(Locale.US, "%,.1f m²", m2)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(14.dp).background(Color(c.cls.color)))
+            Spacer(Modifier.width(8.dp))
+            Text("GIS tile · ${c.cls.label}", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
+        }
+        if (c.source.isNotEmpty()) Text("From photo: ${c.source}", fontSize = 12.5.sp, color = Mg.Muted,
+            modifier = Modifier.padding(top = 2.dp))
+        Text("Location (centre): ${String.format(Locale.US, "%.6f, %.6f", c.centerLat, c.centerLon)}",
+            fontSize = 12.5.sp, color = Mg.Ink, modifier = Modifier.padding(top = 6.dp))
+        Text(String.format(Locale.US, "Corners: N %.6f · S %.6f · W %.6f · E %.6f", c.north, c.south, c.west, c.east),
+            fontSize = 11.5.sp, color = Mg.Muted)
+        Text("Tile area: ${area(c.areaM2)} (${String.format(Locale.US, "%.4f", c.areaM2 / 10_000.0)} ha)",
+            fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Mg.Ink, modifier = Modifier.padding(top = 6.dp))
+        for ((label, pct, m2, col) in listOf(
+            Quad("Healthy", c.healthyOfTile, c.healthyM2, GisClass.HEALTHY.color),
+            Quad("Unhealthy", c.unhealthyOfTile, c.unhealthyM2, GisClass.UNHEALTHY.color),
+            Quad("Non-mangrove", c.nonMangroveOfTile, c.nonMangroveM2, GisClass.NON_MANGROVE.color)
+        )) {
+            Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(width = 14.dp, height = 8.dp).background(Color(col)))
+                Spacer(Modifier.width(8.dp))
+                Text(label, Modifier.weight(1f), fontSize = 13.sp, color = Mg.Ink)
+                Text("$pct%  ·  ${area(m2)}", fontSize = 13.sp, color = Mg.Ink)
+            }
+        }
+        Text("Healthy share of the mangrove in this tile: ${c.healthyPct}%", fontSize = 11.5.sp, color = Mg.Muted,
+            modifier = Modifier.padding(top = 6.dp))
+    }
+}
+
+private data class Quad(val label: String, val pct: Int, val m2: Double, val color: Int)
+
+/** North arrow in the map corner. */
+@Composable
+private fun NorthArrow(modifier: Modifier = Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.85f)).padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("N", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
+        Canvas(Modifier.size(width = 16.dp, height = 24.dp)) {
+            val w = size.width
+            val h = size.height
+            drawPath(Path().apply { moveTo(w / 2, 0f); lineTo(w, h); lineTo(w / 2, h * 0.72f); close() }, Mg.Ink)
+            drawPath(Path().apply { moveTo(w / 2, 0f); lineTo(0f, h); lineTo(w / 2, h * 0.72f); close() }, Color(0xFF9AA39E))
+        }
+    }
+}
+
+/** Map legend: one colour swatch per class (a class you untick in the layers card is greyed out). */
+@Composable
+private fun GisLegend(visible: Set<GisClass>, modifier: Modifier = Modifier) {
+    Column(modifier.clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = 0.9f)).padding(8.dp)) {
+        Text("Legend", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
+        for (c in GisClass.values()) {
+            Row(Modifier.padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(width = 18.dp, height = 10.dp).background(Color(c.color)))
+                Spacer(Modifier.width(6.dp))
+                Text(c.label, fontSize = 10.5.sp, color = if (c in visible) Mg.Ink else Mg.Muted)
+            }
+        }
+    }
 }

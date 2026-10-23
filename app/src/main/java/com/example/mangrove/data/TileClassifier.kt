@@ -11,9 +11,9 @@ import kotlinx.coroutines.yield
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-class NoMangroveException : Exception("No mangrove found in this photo")
 class ModelLoadException(why: String) : Exception(why)
 
 /**
@@ -44,7 +44,7 @@ class TileClassifier(private val ctx: Context) {
 
     /**
      * Returns the share of Healthy / Unhealthy tiles, the Non-mangrove share and the tile map, and saves a
-     * small preview photo to thumbFile. Throws if the photo cannot be read or has no mangrove.
+     * small preview photo to thumbFile. Throws if the photo cannot be read. A photo with no mangrove comes back as Non-mangrove.
      */
     suspend fun classify(uri: Uri, thumbFile: File, onProgress: (Float) -> Unit): TileResult = withContext(Dispatchers.Default) {
         if (model == null) throw ModelLoadException(loadError ?: "model not found in assets")
@@ -52,16 +52,25 @@ class TileClassifier(private val ctx: Context) {
         val cols = bmp.width / tile
         val rows = bmp.height / tile
         if (cols == 0 || rows == 0) {                  // photo smaller than one tile: classify it whole
-            val s = tileClass(bmp) ?: throw NoMangroveException()
+            val s = tileClass(bmp)
             saveThumb(bmp, thumbFile)
-            return@withContext if (s == Status.HEALTHY) TileResult(100, 0, 0, "H") else TileResult(0, 100, 0, "U")
+            return@withContext when (s) {
+                Status.HEALTHY -> TileResult(100, 0, 0, "H")
+                Status.UNHEALTHY -> TileResult(0, 100, 0, "U")
+                else -> TileResult(0, 0, 100, "N")
+            }
         }
+        // Ground size of one tile: the photo's diagonal on the ground = height x 43.27 mm / lens (35 mm equivalent).
+        val fl = ExifGps.flight(ctx, uri)
+        val diagonalM = (fl.heightM ?: Config.FLIGHT_HEIGHT_M) * 43.27 / (fl.focal35mm ?: Config.FOCAL_35MM)
+        val tileM = tile * diagonalM / hypot(bmp.width.toDouble(), bmp.height.toDouble())      // metres per tile side
         val n = maxOf(1, tile / Config.READ_SIZE)      // pieces per side inside one tile (512 / 256 = 2)
         val ps = tile / n                              // piece size in px
         var pHealthy = 0                               // the Healthy % is counted over pieces (the scale the model is accurate at)
         var pUnhealthy = 0
         var done = 0
         val grid = StringBuilder()
+        val tilesOut = StringBuilder()                 // per tile "healthy pieces:unhealthy pieces"
         for (r in 0 until rows) {
             for (c in 0 until cols) {
                 var th = 0
@@ -71,26 +80,28 @@ class TileClassifier(private val ctx: Context) {
                     when (tileClass(piece)) {
                         Status.HEALTHY -> th++
                         Status.UNHEALTHY -> tu++
-                        null -> {}                      // non-mangrove piece: not counted in the %
+                        null, Status.NON_MANGROVE, Status.OUT_OF_REACH -> {} // non-mangrove piece: not counted in the %
                     }
                 }
                 pHealthy += th
                 pUnhealthy += tu
                 // the tile map shows each 512 px tile by the majority of its pieces (a tie counts as Healthy)
                 grid.append(if (th + tu == 0) 'N' else if (th >= tu) 'H' else 'U')
+                tilesOut.append(th).append(':').append(tu)
+                if (c < cols - 1) tilesOut.append(',')
                 done++
                 onProgress(done / (rows * cols).toFloat())
                 yield()
             }
-            if (r < rows - 1) grid.append('/')
+            if (r < rows - 1) { grid.append('/'); tilesOut.append('/') }
         }
         val total = pHealthy + pUnhealthy
-        if (total == 0) throw NoMangroveException()
         val allPieces = rows * cols * n * n
-        val h = (pHealthy * 100.0 / total).roundToInt()
+        val h = if (total == 0) 0 else (pHealthy * 100.0 / total).roundToInt()
         val nm = ((allPieces - total) * 100.0 / allPieces).roundToInt()
         saveThumb(Bitmap.createBitmap(bmp, 0, 0, cols * tile, rows * tile), thumbFile)   // exactly the tiled area
-        TileResult(h, 100 - h, nm, grid.toString())
+        val geo = PhotoGeo(tileM, bmp.width / 2.0 / tile, bmp.height / 2.0 / tile, fl.yawDeg ?: 0.0, n * n)
+        TileResult(h, if (total == 0) 0 else 100 - h, nm, grid.toString(), tilesOut.toString(), geo.encode())
     }
 
     private fun saveThumb(b: Bitmap, f: File) {
@@ -100,6 +111,12 @@ class TileClassifier(private val ctx: Context) {
             val t = if (k < 1f) Bitmap.createScaledBitmap(b, (b.width * k).toInt().coerceAtLeast(1), (b.height * k).toInt().coerceAtLeast(1), true) else b
             f.outputStream().use { t.compress(Bitmap.CompressFormat.JPEG, 80, it) }
         } catch (e: Exception) { }
+    }
+
+    /** Out-of-reach photos: only save the small preview photo. The AI is NOT run. */
+    suspend fun makeThumb(uri: Uri, thumbFile: File) = withContext(Dispatchers.Default) {
+        decode(uri)?.let { saveThumb(it, thumbFile) }
+        Unit
     }
 
     private fun decode(uri: Uri): Bitmap? {
@@ -113,8 +130,8 @@ class TileClassifier(private val ctx: Context) {
         return cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
     }
 
-    /** null = Non-mangrove tile (water, mud, land). */
-    private fun tileClass(t: Bitmap): Status? {
+    /** null = Non-mangrove tile (water, mud, land). Also used by the GIS health map. */
+    fun tileClass(t: Bitmap): Status? {
         val small = Bitmap.createScaledBitmap(t, input, input, true)    // piece (256 px) -> model size
         val px = IntArray(input * input)
         small.getPixels(px, 0, input, 0, 0, input, input)

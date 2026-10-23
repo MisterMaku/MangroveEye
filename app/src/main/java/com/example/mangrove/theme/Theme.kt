@@ -34,11 +34,12 @@ object Mg {
     val Amber = Color(0xFFC98A3C); val AmberSoft = Color(0xFFF6E6CC); val AmberText = Color(0xFF8A5A1E)
     val Red = Color(0xFFB8493A); val RedSoft = Color(0xFFF5DDD7); val RedText = Color(0xFF8A3325)
     val Line = Color(0xFFDCD6C6); val Muted = Color(0xFF71695A)
+    val Grey = Color(0xFF8C9AA5); val GreySoft = Color(0xFFE6EAED); val GreyText = Color(0xFF4F5B63)
 }
 
-fun Status.dot() = when (this) { Status.HEALTHY -> Mg.Green; Status.UNHEALTHY -> Mg.Red }
-fun Status.soft() = when (this) { Status.HEALTHY -> Mg.GreenSoft; Status.UNHEALTHY -> Mg.RedSoft }
-fun Status.text() = when (this) { Status.HEALTHY -> Mg.GreenText; Status.UNHEALTHY -> Mg.RedText }
+fun Status.dot() = when (this) { Status.HEALTHY -> Mg.Green; Status.UNHEALTHY -> Mg.Red; Status.NON_MANGROVE -> Mg.Grey; Status.OUT_OF_REACH -> Mg.Amber }
+fun Status.soft() = when (this) { Status.HEALTHY -> Mg.GreenSoft; Status.UNHEALTHY -> Mg.RedSoft; Status.NON_MANGROVE -> Mg.GreySoft; Status.OUT_OF_REACH -> Mg.AmberSoft }
+fun Status.text() = when (this) { Status.HEALTHY -> Mg.GreenText; Status.UNHEALTHY -> Mg.RedText; Status.NON_MANGROVE -> Mg.GreyText; Status.OUT_OF_REACH -> Mg.AmberText }
 
 @Composable
 fun MangroveTheme(content: @Composable () -> Unit) = MaterialTheme(
