@@ -55,6 +55,51 @@ data class Assessment(
             return grid.split("/").sumOf { it.length } * g.tileM * g.tileM
         }
 
+    /** Enhanced tile info with full polygon bounds, not just center point. Returns TileGeo object. */
+    fun tileGeoInfo(row: Int, col: Int): TileGeo? {
+        val g = PhotoGeo.parse(geo) ?: return null
+        val cell = tiles.split("/").getOrNull(row)?.split(",")?.getOrNull(col)?.split(":") ?: return null
+        val nH = cell.getOrNull(0)?.toIntOrNull() ?: return null
+        val nU = cell.getOrNull(1)?.toIntOrNull() ?: return null
+        val np = g.pieces.coerceAtLeast(1)
+        val hp = (nH * 100.0 / np).roundToInt()                    // % of THIS tile that is Healthy
+        val up = (nU * 100.0 / np).roundToInt()                    // % of THIS tile that is Unhealthy
+
+        // Calculate tile center coordinates
+        val right = (col + 0.5 - g.cx) * g.tileM                    // metres east of photo centre
+        val fwd = (g.cy - (row + 0.5)) * g.tileM                    // metres north of photo centre
+        val h = Math.toRadians(g.heading)                           // the way the top of the photo points (0 = north)
+        val east = right * cos(h) + fwd * sin(h)
+        val north = fwd * cos(h) - right * sin(h)
+        val centerLat = lat + north / 111_320.0
+        val centerLon = lon + east / (111_320.0 * cos(Math.toRadians(lat)))
+
+        // Calculate tile polygon bounds (center +/- half tile size in each direction)
+        // This gives us the actual bounding box of this tile on the ground
+        val halfTileM = g.tileM / 2.0
+        val tileH = Math.toRadians(g.heading)
+        val tileNorth = centerLat + (halfTileM * cos(tileH)) / 111_320.0
+        val tileSouth = centerLat - (halfTileM * cos(tileH)) / 111_320.0
+        val tileEast = centerLon + (halfTileM * sin(tileH)) / (111_320.0 * cos(Math.toRadians(centerLat)))
+        val tileWest = centerLon - (halfTileM * sin(tileH)) / (111_320.0 * cos(Math.toRadians(centerLat)))
+
+        return TileGeo(
+            row = row,
+            col = col,
+            centerLat = centerLat,
+            centerLon = centerLon,
+            north = tileNorth,
+            south = tileSouth,
+            west = tileWest,
+            east = tileEast,
+            healthyPct = hp,
+            unhealthyPct = up,
+            nonMangrovePct = (100 - hp - up).coerceAtLeast(0),
+            areaM2 = (tileNorth - tileSouth) * (tileEast - tileWest),
+            tileM = g.tileM
+        )
+    }
+
     /** Details of one tile: its size, its place on the ground (GPS) and its Healthy / Unhealthy share. */
     fun tileInfo(row: Int, col: Int): TileInfo? {
         val g = PhotoGeo.parse(geo) ?: return null
@@ -135,6 +180,35 @@ data class TileInfo(
             else -> Status.UNHEALTHY
         }
     fun areaOf(pct: Int): Double = areaM2 * pct / 100.0
+}
+
+/**
+ * Enhanced tile information combining center point, land use (Healthy/Unhealthy percentages),
+ * polygon bounds, and area. Used for GIS tile polygons and GeoJSON export.
+ */
+data class TileGeo(
+    val row: Int,
+    val col: Int,
+    val centerLat: Double,
+    val centerLon: Double,
+    val north: Double,
+    val south: Double,
+    val west: Double,
+    val east: Double,
+    val healthyPct: Int,
+    val unhealthyPct: Int,
+    val nonMangrovePct: Int,
+    val areaM2: Double,
+    val tileM: Double  // side length in metres
+) {
+    val status: Status
+        get() = when {
+            healthyPct == 0 && unhealthyPct == 0 -> Status.NON_MANGROVE
+            healthyPct >= unhealthyPct -> Status.HEALTHY
+            else -> Status.UNHEALTHY
+        }
+    val centerLatLon: Pair<Double, Double>
+        get() = centerLat to centerLon
 }
 
 /** Small preview photos saved on the phone (one per assessment), used in the log, tile view and PDF. */

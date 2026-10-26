@@ -338,9 +338,32 @@ fun MapScreen(vm: AppViewModel) {
                 }
             }
             item {
-                MgButton(Icons.Outlined.PictureAsPdf, "Save Log to PDF", "Timestamp, status, action") {
-                    val ok = PdfExporter.save(ctx, vm.assessments)
-                    Toast.makeText(ctx, if (ok) "PDF saved to Downloads" else "Could not save PDF", Toast.LENGTH_SHORT).show()
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    MgButton(Icons.Outlined.PictureAsPdf, "Save Log to PDF", "Timestamp, status, action", modifier = Modifier.weight(1f)) {
+                        val ok = PdfExporter.save(ctx, vm.assessments)
+                        Toast.makeText(ctx, if (ok) "PDF saved to Downloads" else "Could not save PDF", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            if (vm.gis != null) {
+                item {
+                    val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(System.currentTimeMillis())
+                    val geoJsonFileName = "MangroveEye_GIS_Export_$dateFmt.geojson"
+                    val geoJsonExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/geo+json")) { uri ->
+                        uri?.let { u ->
+                            try {
+                                ctx.contentResolver.openOutputStream(u)?.use { stream ->
+                                    stream.write(vm.gis!!.toGeoJson().toByteArray())
+                                }
+                                Toast.makeText(ctx, "GeoJSON saved successfully", Toast.LENGTH_SHORT).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(ctx, "Failed to save GeoJSON", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                    SmallButton(Icons.Outlined.Download, "Download GeoJSON") {
+                        geoJsonExporter.launch(geoJsonFileName)
+                    }
                 }
             }
             if (vm.assessments.isNotEmpty()) item {

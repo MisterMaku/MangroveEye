@@ -17,6 +17,15 @@ import kotlin.math.roundToInt
 class ModelLoadException(why: String) : Exception(why)
 
 /**
+ * Changes classification to return per-tile geometry information alongside Healthy/Unhealthy percentages.
+ * Each tile's actual geographic bounds are now available through the returned TileResultWithGeo object.
+ */
+data class TileResultWithGeo(
+    val healthy: Int, val unhealthy: Int, val nonMangrove: Int = 0, val grid: String = "",
+    val tilesGeo: String = ""  // Per-tile "geo_string" for each tile, tiles split by ","
+)
+
+/**
  * Steps: "AI tiles image" -> "Healthy / Unhealthy".
  * The photo is cut into 512 x 512 px tiles. The model reads each tile in 256 px pieces (Config.READ_SIZE), because it is
  * accurate at that scale; every piece is shrunk to the model's input size (224 x 224) and classified. The model has 3 outputs (Healthy, Non-mangrove, Unhealthy). Non-mangrove tiles

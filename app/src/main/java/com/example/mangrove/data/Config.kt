@@ -47,7 +47,7 @@ object Config {
     // A photo is Non-mangrove when this % (or more) of its pieces are water, mud or land
     const val NON_MANGROVE_MIN = 50
 
-    const val GIS_CELL_M = 6.0      // 86.4 m² per GIS tile
+    const val GIS_CELL_M = 9.295    // 9.295 m x 9.295 m = about 86.4 m² per GIS cell
     const val GIS_REF_LAT = 7.045
     const val GIS_MIN_COVER = 0.10
 

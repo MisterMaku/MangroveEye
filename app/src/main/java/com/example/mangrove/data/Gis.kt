@@ -1,19 +1,10 @@
 package com.example.mangrove.data
 
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.roundToInt
-
-/*
- * ADD these 4 lines inside `object Config { ... }` (Config.kt, Step 7):
- *
- *     // GIS map grid: one fixed square cell = 9.295 m x 9.295 m = 86.4 m²  (like the GIS screenshot)
- *     const val GIS_CELL_M = 9.295
- *     // Latitude used to turn metres into degrees of longitude, so the grid never moves between uploads
- *     const val GIS_REF_LAT = 7.045
- *     // A cell is drawn only if the uploaded photos cover at least this share of it (0.10 = 10 %)
- *     const val GIS_MIN_COVER = 0.10
- */
 
 /** Colours: green = healthy, orange = unhealthy, grey = not mangrove. */
 enum class GisClass(val label: String, val color: Int) {
@@ -32,6 +23,12 @@ data class GisCell(
     private val pieces: Int get() = (h + u + other).coerceAtLeast(1)
     val centerLat: Double get() = (north + south) / 2
     val centerLon: Double get() = (west + east) / 2
+
+    /** Polygon coordinates for GeoJSON: [[lon, lat], ...] */
+    val polygon: List<Pair<Double, Double>> get() = listOf(
+        west to north, east to north, east to south, west to south, west to north
+    )
+
     /** Share of THIS cell that is Healthy / Unhealthy / Non-mangrove, in %. */
     val healthyOfTile: Int get() = (h * 100.0 / pieces).roundToInt()
     val unhealthyOfTile: Int get() = (u * 100.0 / pieces).roundToInt()
@@ -46,7 +43,36 @@ data class GisResult(val photos: Int, val cells: List<GisCell>) {
     val totalM2: Double = cells.sumOf { it.areaM2 }
     fun areaOf(c: GisClass): Double = cells.filter { it.cls == c }.sumOf { it.areaM2 }
     val mangroveM2: Double get() = totalM2 - areaOf(GisClass.NON_MANGROVE)
+
+    /** Export to GeoJSON */
+    fun toGeoJson(): String {
+        val features = JSONArray()
+        cells.forEach { cell ->
+            val feature = JSONObject()
+            feature.put("type", "Feature")
+            val geometry = JSONObject()
+            geometry.put("type", "Polygon")
+            val coords = JSONArray()
+            val ring = JSONArray()
+            cell.polygon.forEach { (lon, lat) -> ring.put(JSONArray().put(lon).put(lat)) }
+            coords.put(ring)
+            geometry.put("coordinates", coords)
+            feature.put("geometry", geometry)
+            val props = JSONObject()
+            props.put("class", cell.cls.label)
+            props.put("healthy_pct", cell.healthyOfTile)
+            props.put("area_m2", cell.areaM2)
+            props.put("source", cell.source)
+            feature.put("properties", props)
+            features.put(feature)
+        }
+        val fc = JSONObject()
+        fc.put("type", "FeatureCollection")
+        fc.put("features", features)
+        return fc.toString(2)
+    }
 }
+
 
 /**
  * Builds the GIS layer from the photos uploaded and analyzed in the app (the assessment log).
