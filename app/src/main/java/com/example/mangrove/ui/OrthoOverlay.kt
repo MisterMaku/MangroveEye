@@ -24,6 +24,9 @@ class OrthoOverlay : Overlay() {
     private val p1 = Point()
     private val p2 = Point()
 
+    /** When false the QGIS imagery is not drawn (e.g. the GIS view uses a plain white canvas). */
+    var visible = true
+
     /** Switches to another QGIS map (or none). */
     fun setSource(s: OrthoSource?) {
         val k = s?.key ?: ""
@@ -38,6 +41,7 @@ class OrthoOverlay : Overlay() {
 
     override fun draw(c: Canvas, mapView: MapView, shadow: Boolean) {
         if (shadow) return
+        if (!visible) return
         val s = src ?: return
         val zf = zip ?: return
         // use the next sharper zoom level and shrink it (never stretch a smaller tile)

@@ -9,6 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -25,37 +26,54 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import com.example.mangrove.data.Config
 import com.example.mangrove.data.Status
-
-/** Colors copied from mangrove_mockup_v2.html */
-object Mg {
-    val Cream = Color(0xFFF2EFE6); val Ink = Color(0xFF1C2B24)
-    val Forest = Color(0xFF173D30); val Forest2 = Color(0xFF1F5340)
-    val Green = Color(0xFF4A7C59); val GreenSoft = Color(0xFFDCEAD9); val GreenText = Color(0xFF2C5A3A)
-    val Amber = Color(0xFFC98A3C); val AmberSoft = Color(0xFFF6E6CC); val AmberText = Color(0xFF8A5A1E)
-    val Red = Color(0xFFB8493A); val RedSoft = Color(0xFFF5DDD7); val RedText = Color(0xFF8A3325)
-    val Line = Color(0xFFDCD6C6); val Muted = Color(0xFF71695A)
-    val Grey = Color(0xFF8C9AA5); val GreySoft = Color(0xFFE6EAED); val GreyText = Color(0xFF4F5B63)
-}
-
-fun Status.dot() = when (this) { Status.HEALTHY -> Mg.Green; Status.UNHEALTHY -> Mg.Red; Status.NON_MANGROVE -> Mg.Grey; Status.OUT_OF_REACH -> Mg.Amber }
-fun Status.soft() = when (this) { Status.HEALTHY -> Mg.GreenSoft; Status.UNHEALTHY -> Mg.RedSoft; Status.NON_MANGROVE -> Mg.GreySoft; Status.OUT_OF_REACH -> Mg.AmberSoft }
-fun Status.text() = when (this) { Status.HEALTHY -> Mg.GreenText; Status.UNHEALTHY -> Mg.RedText; Status.NON_MANGROVE -> Mg.GreyText; Status.OUT_OF_REACH -> Mg.AmberText }
+import com.example.mangrove.theme.Mg
 
 @Composable
 fun MangroveTheme(content: @Composable () -> Unit) = MaterialTheme(
-    colorScheme = lightColorScheme(primary = Mg.Forest2, background = Mg.Cream, surface = Color.White, onBackground = Mg.Ink),
+    colorScheme = lightColorScheme(
+        primary = Mg.MangroveLight,
+        onPrimary = Mg.MangroveSoft,
+        primaryContainer = Mg.MangroveSoft,
+        onPrimaryContainer = Mg.Mangrove,
+        background = Mg.Background,
+        onBackground = Mg.Ink,
+        surface = Mg.CardBackground,
+        onSurface = Mg.Ink,
+        surfaceVariant = Mg.MangroveSoft,
+        onSurfaceVariant = Mg.InkMuted,
+        outline = Mg.Line
+    ),
+    typography = Typography(),
     content = content
 )
 
 @Composable
 fun StatusPill(s: Status) {
     Row(
-        Modifier.clip(RoundedCornerShape(50)).background(s.soft()).padding(horizontal = 10.dp, vertical = 3.dp),
+        Modifier.clip(RoundedCornerShape(50)).background(
+            if (s == Status.HEALTHY) Mg.GreenSoft.copy(alpha = 0.9f)
+            else if (s == Status.UNHEALTHY) Mg.RedSoft.copy(alpha = 0.9f)
+            else if (s == Status.NON_MANGROVE) Mg.GreySoft.copy(alpha = 0.9f)
+            else Mg.AmberSoft.copy(alpha = 0.9f)
+        ).padding(horizontal = 12.dp, vertical = 4.dp).shadow(1.dp, RoundedCornerShape(50)),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(s.dot()))
-        Spacer(Modifier.width(5.dp))
-        Text(s.label, color = s.text(), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Box(Modifier.size(7.dp).clip(CircleShape).background(
+            if (s == Status.HEALTHY) Mg.Healthy
+            else if (s == Status.UNHEALTHY) Mg.Unhealthy
+            else if (s == Status.NON_MANGROVE) Mg.NonMangrove
+            else Mg.Amber
+        ))
+        Spacer(Modifier.width(6.dp))
+        Text(
+            s.label,
+            color = if (s == Status.HEALTHY) Mg.GreenText
+                    else if (s == Status.UNHEALTHY) Mg.RedText
+                    else if (s == Status.NON_MANGROVE) Mg.GreyText
+                    else Mg.AmberText,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
 
@@ -65,21 +83,50 @@ fun MgButton(
     modifier: Modifier = Modifier, onClick: () -> Unit
 ) {
     Surface(
-        onClick = onClick, modifier = modifier.fillMaxWidth().heightIn(min = 50.dp),
-        shape = RoundedCornerShape(12.dp),
-        color = if (primary) Mg.Forest2 else Color.White,
-        contentColor = if (primary) Mg.Cream else Mg.Ink,
+        onClick = onClick,
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(min = 52.dp)
+            .shadow(if (primary) 3.dp else 0.dp, RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(14.dp)),
+        shape = RoundedCornerShape(14.dp),
+        color = if (primary) Mg.MangroveLight else Mg.CardBackground,
+        contentColor = if (primary) Mg.MangroveSoft else Mg.Ink,
         border = if (primary) null else BorderStroke(1.dp, Mg.Line),
-        shadowElevation = 1.dp
+        shadowElevation = if (primary) 4.dp else 0.dp
     ) {
-        Row(Modifier.padding(10.dp, 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.padding(16.dp, 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             if (icon != null) {
-                DottedIcon(icon, 38.dp, tint = if (primary) Mg.Cream else Mg.Forest2)
-                Spacer(Modifier.width(12.dp))
+                Icon(
+                    icon,
+                    null,
+                    modifier = Modifier.size(28.dp),
+                    tint = if (primary) Mg.MangroveSoft else Mg.Mangrove
+                )
+                Divider(
+                    modifier = Modifier.width(1.dp).height(24.dp),
+                    color = if (primary) Mg.MangroveSoft.copy(0.5f) else Mg.Line
+                )
             }
-            Column {
-                Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-                if (sub != null) Text(sub, fontSize = 12.5.sp, color = LocalContentColor.current.copy(0.75f))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                if (sub != null) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        sub,
+                        fontSize = 12.5.sp,
+                        color = LocalContentColor.current.copy(0.7f),
+                        fontWeight = FontWeight.Normal
+                    )
+                }
             }
         }
     }
@@ -88,17 +135,24 @@ fun MgButton(
 /** Small, simple pill button (used for the QGIS layer buttons). */
 @Composable
 fun SmallButton(icon: ImageVector, text: String, onClick: () -> Unit) {
-    OutlinedButton(
+    Surface(
         onClick = onClick,
-        modifier = Modifier.height(32.dp),
         shape = RoundedCornerShape(50),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-        border = BorderStroke(1.dp, Mg.Line),
-        colors = ButtonDefaults.outlinedButtonColors(containerColor = Color.White, contentColor = Mg.Forest2)
+        color = Mg.MangroveSoft.copy(alpha = 0.3f),
+        contentColor = Mg.Mangrove,
+        shadowElevation = 1.dp
     ) {
-        Icon(icon, null, Modifier.size(16.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(text, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Row(
+            Modifier
+                .height(36.dp)
+                .clip(RoundedCornerShape(50))
+                .padding(horizontal = 14.dp, vertical = 0.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(icon, null, Modifier.size(16.dp))
+            Text(text, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
     }
 }
 
@@ -115,19 +169,43 @@ fun DottedIcon(icon: ImageVector, size: Dp = 38.dp, tint: Color = Mg.Forest2) {
 }
 
 @Composable
-fun LocationLine(color: Color, modifier: Modifier = Modifier) {
+fun LocationLine(color: Color, modifier: Modifier = Modifier, text: String = Config.SITE_NAME) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         Icon(Icons.Outlined.LocationOn, null, tint = color, modifier = Modifier.size(18.dp))
         Spacer(Modifier.width(4.dp))
-        Text(Config.SITE_NAME, fontSize = 14.sp, color = color)
+        Text(text, fontSize = 14.sp, color = color)
     }
 }
 
 @Composable
 fun SectionLabel(icon: ImageVector, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Icon(icon, null, tint = Mg.Forest2, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Mg.Forest2, letterSpacing = 0.6.sp)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(vertical = 4.dp)
+    ) {
+        Icon(icon, null, tint = Mg.MangroveLight, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Bold,
+            color = Mg.MangroveLight,
+            letterSpacing = 0.5.sp
+        )
+    }
+}
+
+/** Small "N" north arrow in the top-left of the map, so the orientation is clear. */
+@Composable
+fun NorthArrow(modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(Color.White.copy(alpha = 0.85f))
+            .shadow(2.dp, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Text("N", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Mg.Ink)
     }
 }

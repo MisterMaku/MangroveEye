@@ -32,7 +32,7 @@ object Config {
 
     // Tile details (size in m² and location): the ground size of a photo is worked out from the flight height and the
     // lens, both read from the DJI photo itself. These two values are used only when the photo does not say.
-    const val FLIGHT_HEIGHT_M = 30.0     // metres above the ground
+    const val FLIGHT_HEIGHT_M = 4.0      // metres above the ground
     const val FOCAL_35MM = 24.0          // DJI Mini 4K lens: 24 mm (35 mm equivalent)
 
     // The app follows the model: write its 3 class names in the SAME ORDER as the model's outputs
@@ -46,9 +46,4 @@ object Config {
     const val HEALTHY_MIN = 60
     // A photo is Non-mangrove when this % (or more) of its pieces are water, mud or land
     const val NON_MANGROVE_MIN = 50
-
-    const val GIS_CELL_M = 9.295    // 9.295 m x 9.295 m = about 86.4 m² per GIS cell
-    const val GIS_REF_LAT = 7.045
-    const val GIS_MIN_COVER = 0.10
-
 }

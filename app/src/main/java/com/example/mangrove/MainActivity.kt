@@ -21,7 +21,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +34,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.example.mangrove.theme.Mg
 import com.example.mangrove.ui.*
 
 class MainActivity : ComponentActivity() {
@@ -51,23 +51,25 @@ fun App() {
     val route = nav.currentBackStackEntryAsState().value?.destination?.route
 
     Scaffold(bottomBar = {
-        if (route == "home" || route == "map") CompactNavBar(
+        if (route in listOf("home", "map")) CompactNavBar(
             route,
             onHome = { nav.navigate("home") { popUpTo("home"); launchSingleTop = true } },
             onMap = { nav.navigate("map") { popUpTo("home"); launchSingleTop = true } }
         )
     }) { pad ->
         NavHost(nav, "splash", Modifier.padding(pad)) {
-            composable("splash") { SplashScreen { nav.navigate("home") { popUpTo("splash") { inclusive = true } } } }
+            composable("splash") {
+                SplashScreen { nav.navigate("home") { popUpTo("splash") { inclusive = true } } }
+            }
             composable("home") { HomeScreen(vm, nav) }
             composable("upload") { UploadScreen(vm, nav) }
             composable("analyzing") { AnalyzingScreen(vm) }
-            composable("map") { MapScreen(vm) }
+            composable("map") { MapScreen(vm, nav) }
         }
     }
 }
 
-/** Slim bottom bar (about 50 dp instead of the standard 80 dp). */
+/** Slim bottom bar */
 @Composable
 private fun CompactNavBar(route: String?, onHome: () -> Unit, onMap: () -> Unit) {
     Surface(color = Color.White, shadowElevation = 6.dp) {

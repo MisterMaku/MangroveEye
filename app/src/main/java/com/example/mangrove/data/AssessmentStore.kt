@@ -17,7 +17,8 @@ class AssessmentStore(ctx: Context) {
                 o.getDouble("lat"), o.getDouble("lon"),
                 healthyOf(o), unhealthyOf(o), o.optString("k", ""),
                 o.optInt("n", 0), o.optString("g", ""), o.optString("th", ""), o.optBoolean("o", false),
-                o.optString("tl", ""), o.optString("geo", ""))
+                o.optString("tl", ""), o.optString("geo", ""), o.optString("map", ""),
+                o.optString("fp", ""))  // imageFootprint field
         }
     } catch (e: Exception) { emptyList() }
 
@@ -28,7 +29,7 @@ class AssessmentStore(ctx: Context) {
                 .put("lat", it.lat).put("lon", it.lon)
                 .put("h", it.healthy).put("u", it.unhealthy).put("k", it.photoKey)
                 .put("n", it.nonMangrove).put("g", it.grid).put("th", it.thumb).put("o", it.outOfReach)
-                .put("tl", it.tiles).put("geo", it.geo))
+                .put("tl", it.tiles).put("geo", it.geo).put("map", it.mapKey).put("fp", it.imageFootprint))
         }
         file.writeText(a.toString())
     }

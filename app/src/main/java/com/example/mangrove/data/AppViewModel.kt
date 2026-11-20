@@ -13,6 +13,7 @@ import com.example.mangrove.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -33,15 +34,77 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var ortho by mutableStateOf(OrthoTiles.load(app)); private set
     var hasCustomMap by mutableStateOf(OrthoTiles.hasCustom(app)); private set     // user added a QGIS map
 
-    // ---------- GIS health map (built from the photos you uploaded) ----------
-    // Rebuilt by itself whenever the assessment log changes. No extra AI run is needed:
-    // the tiles of every analyzed photo are placed on the map at their GPS.
-    val gis: GisResult? by derivedStateOf { GisBuilder.build(assessments) }
-    var showGis by mutableStateOf(false)                                  // GIS tiles shown on the Map screen
-    var showPins by mutableStateOf(true)                                  // pins shown on the Map screen (Pins chip)
-    var gisVisible by mutableStateOf(GisClass.values().toSet())          // layers ticked in the legend
+    // Pending import: the zip is scanned first; the info form is shown before anything is saved.
+    var pendingMapUri by mutableStateOf<Uri?>(null)
 
-    fun toggleGisClass(c: GisClass) { gisVisible = if (c in gisVisible) gisVisible - c else gisVisible + c }
+    /** The user picked a zip. Scan it right away and, if it is a valid map, show the info form. */
+    fun pickMap(uri: Uri, onValid: () -> Unit, onInvalid: () -> Unit) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                val ctx = getApplication<Application>()
+                try {
+                    val tmp = File(ctx.filesDir, "check.tmp")
+                    ctx.contentResolver.openInputStream(uri)?.use { i -> tmp.outputStream().use { o -> i.copyTo(o) } }
+                    val valid = OrthoTiles.isZipMap(tmp)
+                    tmp.delete()
+                    valid
+                } catch (e: Exception) { false }
+            }
+            if (ok) { pendingMapUri = uri; onValid() } else onInvalid()
+        }
+    }
+
+    /** Called when the map info form is saved. With a pending zip: import it with the entered info.
+     *  Without one: keep the current map (built-in stays the default) and save the entered info with it,
+     *  so the user can create a map entry without uploading an orthomosaic. */
+    fun confirmImportMap(info: MapInfo, onDone: (OrthoSource?) -> Unit) {
+        val uri = pendingMapUri
+        pendingMapUri = null
+        if (uri != null) { importMap(uri, info, onDone); return }
+        viewModelScope.launch {
+            val ctx = getApplication<Application>()
+            val src = withContext(Dispatchers.IO) {
+                val current = ortho
+                if (current != null && current.custom) {
+                    OrthoTiles.saveInfo(ctx, info)                 // update info of the user's own map
+                    OrthoTiles.scan(current.file, true, info)
+                } else {
+                    OrthoTiles.saveBuiltinInfo(ctx, info)          // info entry for the built-in map
+                    OrthoTiles.useBuiltIn(ctx)                     // reload the built-in map with the new info
+                }
+            }
+            if (src != null) ortho = src
+            onDone(src)
+        }
+    }
+
+    /** The user cancelled the info form: drop the pending zip, do not save anything. */
+    fun cancelImportMap() { pendingMapUri = null }
+
+
+    // ---------- Density Visualization (AI assessment results) ----------
+    // Only assessments that belong to the currently selected QGIS map feed the map views, so switching
+    // maps never mixes data. Entries with an empty mapKey (saved before this key existed) stay visible
+    // on every map, so no existing log entry disappears.
+    val mapAssessments: List<Assessment>
+        get() = assessments.filter { it.mapKey.isEmpty() || it.mapKey == ortho?.key }
+
+    val tileGisResult by derivedStateOf { TileGisBuilder.build(mapAssessments) }
+    val heatmapResult by derivedStateOf { HeatmapBuilder.build(tileGisResult.features) }
+    var showTileGis by mutableStateOf(false)                                  // Individual tile polygons shown on the Map screen
+    var showHeatmap by mutableStateOf(false)                                  // Heatmap: smooth health-density blobs
+    var showPins by mutableStateOf(true)                                  // pins shown on the Map screen (Pins chip)
+
+    // ---------- GIS visualization: one density cluster per assessment (green Healthy / red Unhealthy) ----------
+    val gisResult by derivedStateOf { GisBuilder.build(mapAssessments) }
+
+    // ---------- Bounding Box for Map 2 Capture ----------
+    var boundingBox by mutableStateOf(GeoRotatableBox())                     // user-defined selection rectangle
+    private set
+
+    // ---------- Image Capture Tracking (Map 2): which areas have been flown? ----------
+    val coverage by derivedStateOf { CoverageTracker.build(mapAssessments, ortho, boundingBox) }
+    var showCoverage by mutableStateOf(false)                                // capture tracking overlay shown on the Map screen
 
     // ---------- upload: single or batch ----------
     /** One box for everything: pick one photo or many at once. Picking again adds more. */
@@ -134,9 +197,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         (assessments.mapNotNull { it.name.removePrefix("Site ").toIntOrNull() }.maxOrNull() ?: 0) + 1
 
     // ---------- your own QGIS map ----------
-    fun importMap(uri: Uri, onDone: (OrthoSource?) -> Unit) {
+    fun importMap(uri: Uri, onDone: (OrthoSource?) -> Unit) = importMap(uri, null, onDone)
+
+    /** Import the map zip and save the map info (name, location, description, study area) with it. */
+    fun importMap(uri: Uri, info: MapInfo?, onDone: (OrthoSource?) -> Unit) {
         viewModelScope.launch {
-            val src = withContext(Dispatchers.IO) { OrthoTiles.import(getApplication(), uri) }
+            val src = withContext(Dispatchers.IO) {
+                val ctx = getApplication<Application>()
+                if (info != null) OrthoTiles.import(ctx, uri, info) else OrthoTiles.import(ctx, uri)
+            }
             if (src != null) { ortho = src; hasCustomMap = true }
             onDone(src)
         }
@@ -185,11 +254,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val id = UUID.randomUUID().toString()
                 val thumbFile = Thumbs.file(getApplication(), "$id.jpg")
                 val outside = isOutside(p)
-                val r: TileResult? = if (outside) {
+                val r: TileResultWithGeo? = if (outside) {
                     // GPS is outside the orthomosaic: NO AI prediction, only a preview photo.
                     classifier.makeThumb(p.uri, thumbFile)
                     progress = (i + 1f) / list.size
-                    TileResult(0, 0, 0, "")
+                    TileResultWithGeo()
                 } else try {
                     classifier.classify(p.uri, thumbFile) { progress = (i + it) / list.size }
                 } catch (e: ModelLoadException) { modelError = e.message; null
@@ -202,8 +271,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     list.size == 1 -> base
                     else -> "$base ${i + 1}"
                 }
+                val imageFootprintStr = try {
+                    ExifGps.calculateFootprint(getApplication(), p.uri)?.encode() ?: ""
+                } catch (e: Exception) { "" }
                 val a = Assessment(id, name, System.currentTimeMillis(), la, lo, r.healthy, r.unhealthy, p.key,
-                    r.nonMangrove, r.grid, if (thumbFile.exists()) thumbFile.name else "", outside, r.tiles, r.geo)
+                    r.nonMangrove, r.grid, if (thumbFile.exists()) thumbFile.name else "", outside, r.tiles, r.geo,
+                    mapKey = ortho?.key ?: "", imageFootprint = imageFootprintStr)
                 assessments = listOf(a) + assessments
                 lastId = a.id
             }

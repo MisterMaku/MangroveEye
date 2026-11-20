@@ -16,13 +16,14 @@ import kotlin.math.roundToInt
 
 class ModelLoadException(why: String) : Exception(why)
 
-/**
- * Changes classification to return per-tile geometry information alongside Healthy/Unhealthy percentages.
- * Each tile's actual geographic bounds are now available through the returned TileResultWithGeo object.
- */
+/** Result of analyzing one photo: photo-level percentages, the tile map and the per-tile counts. */
 data class TileResultWithGeo(
-    val healthy: Int, val unhealthy: Int, val nonMangrove: Int = 0, val grid: String = "",
-    val tilesGeo: String = ""  // Per-tile "geo_string" for each tile, tiles split by ","
+    val healthy: Int = 0,
+    val unhealthy: Int = 0,
+    val nonMangrove: Int = 0,
+    val grid: String = "",
+    val tiles: String = "",        // Per tile "healthy pieces:unhealthy pieces", tiles split by ",", rows by "/"
+    val geo: String = ""           // PhotoGeo encoded: tileM,cx,cy,heading,pieces
 )
 
 /**
@@ -55,7 +56,10 @@ class TileClassifier(private val ctx: Context) {
      * Returns the share of Healthy / Unhealthy tiles, the Non-mangrove share and the tile map, and saves a
      * small preview photo to thumbFile. Throws if the photo cannot be read. A photo with no mangrove comes back as Non-mangrove.
      */
-    suspend fun classify(uri: Uri, thumbFile: File, onProgress: (Float) -> Unit): TileResult = withContext(Dispatchers.Default) {
+    suspend fun classify(uri: Uri, thumbFile: File, onProgress: (Float) -> Unit): TileResultWithGeo =
+        withContext(Dispatchers.Default) { classifyInternal(uri, thumbFile, onProgress) }
+
+    private suspend fun classifyInternal(uri: Uri, thumbFile: File, onProgress: (Float) -> Unit): TileResultWithGeo = withContext(Dispatchers.Default) {
         if (model == null) throw ModelLoadException(loadError ?: "model not found in assets")
         val bmp = decode(uri) ?: throw IllegalStateException("Could not read the photo")
         val cols = bmp.width / tile
@@ -63,11 +67,28 @@ class TileClassifier(private val ctx: Context) {
         if (cols == 0 || rows == 0) {                  // photo smaller than one tile: classify it whole
             val s = tileClass(bmp)
             saveThumb(bmp, thumbFile)
-            return@withContext when (s) {
-                Status.HEALTHY -> TileResult(100, 0, 0, "H")
-                Status.UNHEALTHY -> TileResult(0, 100, 0, "U")
-                else -> TileResult(0, 0, 100, "N")
-            }
+            val fl = ExifGps.flight(ctx, uri)
+            val diagonalM = (fl.heightM ?: Config.FLIGHT_HEIGHT_M) * 43.27 / (fl.focal35mm ?: Config.FOCAL_35MM)
+            val tileM = tile * diagonalM / hypot(bmp.width.toDouble(), bmp.height.toDouble())
+            val photoGeo = PhotoGeo(tileM, 0.5, 0.5, fl.yawDeg ?: 0.0, 1)
+            return@withContext TileResultWithGeo(
+                healthy = when (s) {
+                    Status.HEALTHY -> 100
+                    Status.UNHEALTHY -> 0
+                    else -> 0
+                },
+                unhealthy = when (s) {
+                    Status.UNHEALTHY -> 100
+                    else -> 0
+                },
+                nonMangrove = when (s) {
+                    Status.NON_MANGROVE -> 100
+                    else -> 0
+                },
+                grid = "H",
+                tiles = "1:0",
+                geo = photoGeo.encode()
+            )
         }
         // Ground size of one tile: the photo's diagonal on the ground = height x 43.27 mm / lens (35 mm equivalent).
         val fl = ExifGps.flight(ctx, uri)
@@ -110,7 +131,14 @@ class TileClassifier(private val ctx: Context) {
         val nm = ((allPieces - total) * 100.0 / allPieces).roundToInt()
         saveThumb(Bitmap.createBitmap(bmp, 0, 0, cols * tile, rows * tile), thumbFile)   // exactly the tiled area
         val geo = PhotoGeo(tileM, bmp.width / 2.0 / tile, bmp.height / 2.0 / tile, fl.yawDeg ?: 0.0, n * n)
-        TileResult(h, if (total == 0) 0 else 100 - h, nm, grid.toString(), tilesOut.toString(), geo.encode())
+        TileResultWithGeo(
+            healthy = h,
+            unhealthy = if (total == 0) 0 else 100 - h,
+            nonMangrove = nm,
+            grid = grid.toString(),
+            tiles = tilesOut.toString(),
+            geo = geo.encode()
+        )
     }
 
     private fun saveThumb(b: Bitmap, f: File) {
